@@ -219,81 +219,76 @@ function renderDevice(device) {
   title.textContent = device.name;
   wrapper.appendChild(title);
 
-  // Vibrate actuators
-  const vibrateAttrs = device.vibrateAttributes || [];
-  vibrateAttrs.forEach((attr, idx) => {
-    const row = document.createElement('div');
-    row.className = 'actuator';
+  // v5 API: device.features is a Map<featureIndex, feature>,
+  // feature.outputs is a Map<OutputType, descriptor>
+  let controlCount = 0;
 
-    const label = document.createElement('div');
-    label.className = 'actuator-label';
-    const valueSpan = document.createElement('span');
-    valueSpan.textContent = '0%';
-    label.innerHTML = `<span>震動馬達 ${idx}</span>`;
-    label.appendChild(valueSpan);
-    row.appendChild(label);
+  const outputLabels = {
+    Vibrate: '震動',
+    Oscillate: '震盪',
+    Rotate: '旋轉',
+    Constrict: '收縮',
+    Position: '位置',
+    PositionWithDuration: '位置'
+  };
 
-    const slider = document.createElement('input');
-    slider.type = 'range';
-    slider.min = '0';
-    slider.max = '100';
-    slider.value = '0';
-    slider.addEventListener('input', () => {
-      valueSpan.textContent = slider.value + '%';
-    });
-    slider.addEventListener('change', async () => {
-      const strength = Number(slider.value) / 100;
-      try {
-        await device.vibrate({ index: idx, scalar: strength });
-        log(`${device.name} 馬達${idx} -> ${slider.value}%`);
-      } catch (e) {
-        log(`錯誤: ${e.message}`);
+  const controllableTypes = ['Vibrate', 'Oscillate', 'Rotate', 'Constrict'];
+
+  if (device.features) {
+    for (const [featureIndex, feature] of device.features) {
+      if (!feature.outputs) continue;
+      for (const outputType of feature.outputs.keys()) {
+        if (!controllableTypes.includes(outputType)) continue;
+        controlCount++;
+
+        const row = document.createElement('div');
+        row.className = 'actuator';
+
+        const label = document.createElement('div');
+        label.className = 'actuator-label';
+        const valueSpan = document.createElement('span');
+        valueSpan.textContent = '0%';
+        const typeName = outputLabels[outputType] || outputType;
+        const desc = feature.descriptor ? `（${feature.descriptor}）` : '';
+        label.innerHTML = `<span>${typeName} ${featureIndex}${desc}</span>`;
+        label.appendChild(valueSpan);
+        row.appendChild(label);
+
+        const slider = document.createElement('input');
+        slider.type = 'range';
+        slider.min = '0';
+        slider.max = '100';
+        slider.value = '0';
+        slider.addEventListener('input', () => {
+          valueSpan.textContent = slider.value + '%';
+        });
+        slider.addEventListener('change', async () => {
+          const strength = Number(slider.value) / 100;
+          try {
+            const cmd = BP.DeviceOutput[outputType].percent(strength);
+            try {
+              // Try per-feature control first (matches multi-motor devices)
+              await device.runOutput(featureIndex, cmd);
+            } catch (innerErr) {
+              // Fallback: some builds only support the all-features convenience call
+              await device.runOutput(cmd);
+            }
+            log(`${device.name} ${typeName}${featureIndex} -> ${slider.value}%`);
+          } catch (e) {
+            log(`錯誤 (${typeName}${featureIndex}): ${e.message}`);
+          }
+        });
+        row.appendChild(slider);
+        wrapper.appendChild(row);
       }
-    });
-    row.appendChild(slider);
-    wrapper.appendChild(row);
-  });
+    }
+  }
 
-  // Oscillate actuators (some Satisfyer-style protocols expose this)
-  const oscillateAttrs = device.oscillateAttributes || [];
-  oscillateAttrs.forEach((attr, idx) => {
-    const row = document.createElement('div');
-    row.className = 'actuator';
-
-    const label = document.createElement('div');
-    label.className = 'actuator-label';
-    const valueSpan = document.createElement('span');
-    valueSpan.textContent = '0%';
-    label.innerHTML = `<span>震盪馬達 ${idx}</span>`;
-    label.appendChild(valueSpan);
-    row.appendChild(label);
-
-    const slider = document.createElement('input');
-    slider.type = 'range';
-    slider.min = '0';
-    slider.max = '100';
-    slider.value = '0';
-    slider.addEventListener('input', () => {
-      valueSpan.textContent = slider.value + '%';
-    });
-    slider.addEventListener('change', async () => {
-      const strength = Number(slider.value) / 100;
-      try {
-        await device.oscillate({ index: idx, scalar: strength });
-        log(`${device.name} 震盪${idx} -> ${slider.value}%`);
-      } catch (e) {
-        log(`錯誤: ${e.message}`);
-      }
-    });
-    row.appendChild(slider);
-    wrapper.appendChild(row);
-  });
-
-  if (vibrateAttrs.length === 0 && oscillateAttrs.length === 0) {
+  if (controlCount === 0) {
     const note = document.createElement('div');
     note.style.color = 'var(--muted)';
     note.style.fontSize = '0.8rem';
-    note.textContent = '此裝置沒有偵測到可控制的震動馬達';
+    note.textContent = '此裝置沒有偵測到可控制的輸出功能';
     wrapper.appendChild(note);
   }
 
@@ -370,7 +365,9 @@ scanBtn.addEventListener('click', async () => {
 stopBtn.addEventListener('click', async () => {
   if (!client) return;
   try {
-    await client.stopAllDevices();
+    for (const [, device] of client.devices) {
+      await device.stop();
+    }
     log('已送出緊急停止指令');
     document.querySelectorAll('input[type="range"]').forEach(s => {
       s.value = 0;
