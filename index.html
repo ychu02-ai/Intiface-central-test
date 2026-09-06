@@ -175,8 +175,11 @@
   <div id="log"></div>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/buttplug@5/dist/web/buttplug.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/buttplug@5.0.0/dist/web/buttplug.js"></script>
 <script>
+// 不同版本的 buttplug.js 曝露的全域變數名稱不一致 (Buttplug / buttplug)，這裡兩個都嘗試抓
+const BP = window.Buttplug || window.buttplug;
+
 const statusDot = document.getElementById('statusDot');
 const statusText = document.getElementById('statusText');
 const connectBtn = document.getElementById('connectBtn');
@@ -314,10 +317,16 @@ connectBtn.addEventListener('click', async () => {
   }
 
   const url = wsUrlInput.value.trim();
+
+  if (!BP) {
+    log('錯誤: buttplug.js 函式庫未載入成功，請檢查網路連線或重新整理頁面');
+    return;
+  }
+
   log(`嘗試連線至 ${url} ...`);
   try {
-    const connector = new Buttplug.ButtplugBrowserWebsocketClientConnector(url);
-    client = new Buttplug.ButtplugClient('測試頁面');
+    const connector = new BP.ButtplugBrowserWebsocketClientConnector(url);
+    client = new BP.ButtplugClient('測試頁面');
 
     client.addListener('deviceadded', (device) => {
       log(`裝置已連接: ${device.name}`);
@@ -372,7 +381,11 @@ stopBtn.addEventListener('click', async () => {
   }
 });
 
-log('頁面已載入。請先在手機上開啟 Intiface Central 並按下播放鍵啟動伺服器。');
+if (BP) {
+  log('buttplug.js 已載入成功。請先在手機上開啟 Intiface Central 並按下播放鍵啟動伺服器。');
+} else {
+  log('警告: buttplug.js 尚未載入 (window.Buttplug / window.buttplug 皆不存在)，請重新整理頁面再試一次。');
+}
 </script>
 </body>
 </html>
