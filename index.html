@@ -219,76 +219,130 @@ function renderDevice(device) {
   title.textContent = device.name;
   wrapper.appendChild(title);
 
-  // v5 API: device.features is a Map<featureIndex, feature>,
-  // feature.outputs is a Map<OutputType, descriptor>
-  let controlCount = 0;
-
-  const outputLabels = {
-    Vibrate: '震動',
-    Oscillate: '震盪',
-    Rotate: '旋轉',
-    Constrict: '收縮',
-    Position: '位置',
-    PositionWithDuration: '位置'
-  };
-
-  const controllableTypes = ['Vibrate', 'Oscillate', 'Rotate', 'Constrict'];
-
-  if (device.features) {
-    for (const [featureIndex, feature] of device.features) {
-      if (!feature.outputs) continue;
-      for (const outputType of feature.outputs.keys()) {
-        if (!controllableTypes.includes(outputType)) continue;
-        controlCount++;
-
-        const row = document.createElement('div');
-        row.className = 'actuator';
-
-        const label = document.createElement('div');
-        label.className = 'actuator-label';
-        const valueSpan = document.createElement('span');
-        valueSpan.textContent = '0%';
-        const typeName = outputLabels[outputType] || outputType;
-        const desc = feature.descriptor ? `（${feature.descriptor}）` : '';
-        label.innerHTML = `<span>${typeName} ${featureIndex}${desc}</span>`;
-        label.appendChild(valueSpan);
-        row.appendChild(label);
-
-        const slider = document.createElement('input');
-        slider.type = 'range';
-        slider.min = '0';
-        slider.max = '100';
-        slider.value = '0';
-        slider.addEventListener('input', () => {
-          valueSpan.textContent = slider.value + '%';
-        });
-        slider.addEventListener('change', async () => {
-          const strength = Number(slider.value) / 100;
-          try {
-            const cmd = BP.DeviceOutput[outputType].percent(strength);
-            try {
-              // Try per-feature control first (matches multi-motor devices)
-              await device.runOutput(featureIndex, cmd);
-            } catch (innerErr) {
-              // Fallback: some builds only support the all-features convenience call
-              await device.runOutput(cmd);
-            }
-            log(`${device.name} ${typeName}${featureIndex} -> ${slider.value}%`);
-          } catch (e) {
-            log(`錯誤 (${typeName}${featureIndex}): ${e.message}`);
-          }
-        });
-        row.appendChild(slider);
-        wrapper.appendChild(row);
-      }
+  // --- 診斷輸出：把裝置物件實際長相印出來，方便排查 ---
+  try {
+    const ownKeys = Object.getOwnPropertyNames(device);
+    const protoKeys = Object.getOwnPropertyNames(Object.getPrototypeOf(device) || {});
+    log(`[診斷] ${device.name} 自身屬性: ${ownKeys.join(', ')}`);
+    log(`[診斷] ${device.name} 方法: ${protoKeys.join(', ')}`);
+    if (device.features) {
+      try {
+        const featureDump = [];
+        for (const entry of device.features) {
+          featureDump.push(JSON.stringify(entry, (k, v) => typeof v === 'function' ? '[fn]' : v));
+        }
+        log(`[診斷] features: ${featureDump.join(' | ')}`);
+      } catch (e) { log(`[診斷] features 無法列舉: ${e.message}`); }
     }
+    if (device.messageAttributes) {
+      log(`[診斷] messageAttributes: ${JSON.stringify(device.messageAttributes)}`);
+    }
+    if (device.vibrateAttributes) {
+      log(`[診斷] vibrateAttributes: ${JSON.stringify(device.vibrateAttributes)}`);
+    }
+  } catch (e) {
+    log(`[診斷] 讀取裝置結構失敗: ${e.message}`);
   }
 
-  if (controlCount === 0) {
+  // --- 建立通用送出函式，依序嘗試各種可能的 API 形狀 ---
+  async function sendVibrate(index, value) {
+    const attempts = [];
+
+    // 形狀 A: v4/v5 features Map + runOutput(index, DeviceOutput.Vibrate.percent(x))
+    if (BP.DeviceOutput && BP.DeviceOutput.Vibrate && typeof device.runOutput === 'function') {
+      attempts.push(async () => device.runOutput(index, BP.DeviceOutput.Vibrate.percent(value)));
+      attempts.push(async () => device.runOutput(BP.DeviceOutput.Vibrate.percent(value)));
+    }
+    // 形狀 B: v3 device.vibrate({index, scalar})
+    if (typeof device.vibrate === 'function') {
+      attempts.push(async () => device.vibrate({ index, scalar: value }));
+      // 形狀 C: 單一數值 (部分 fork 版本，如 zendrex)
+      attempts.push(async () => device.vibrate(value));
+      // 形狀 D: 陣列形式 (多馬達裝置)
+      attempts.push(async () => device.vibrate([value]));
+    }
+
+    let lastErr = null;
+    for (const attempt of attempts) {
+      try {
+        await attempt();
+        return true;
+      } catch (e) {
+        lastErr = e;
+      }
+    }
+    if (lastErr) throw lastErr;
+    throw new Error('找不到任何可用的震動控制方法');
+  }
+
+  async function sendStopDevice() {
+    if (typeof device.stop === 'function') {
+      return device.stop();
+    }
+    return sendVibrate(0, 0);
+  }
+  wrapper._stop = sendStopDevice;
+
+  // --- 判斷要顯示幾條滑桿 ---
+  let motorCount = 0;
+  if (device.features) {
+    try {
+      for (const [, feature] of device.features) {
+        if (feature.outputs && (feature.outputs.has ? feature.outputs.has('Vibrate') : feature.outputs['Vibrate'])) {
+          motorCount++;
+        }
+      }
+    } catch (e) { /* ignore, fall through */ }
+  }
+  if (motorCount === 0 && device.vibrateAttributes) {
+    motorCount = device.vibrateAttributes.length || 0;
+  }
+  if (motorCount === 0 && device.messageAttributes && device.messageAttributes.ScalarCmd) {
+    motorCount = device.messageAttributes.ScalarCmd.length || 0;
+  }
+  if (motorCount === 0 && typeof device.vibrate === 'function') {
+    // 無法判斷馬達數量，但裝置有 vibrate 方法，至少給一條滑桿試試看
+    motorCount = 1;
+  }
+
+  for (let idx = 0; idx < motorCount; idx++) {
+    const row = document.createElement('div');
+    row.className = 'actuator';
+
+    const label = document.createElement('div');
+    label.className = 'actuator-label';
+    const valueSpan = document.createElement('span');
+    valueSpan.textContent = '0%';
+    label.innerHTML = `<span>震動馬達 ${idx}</span>`;
+    label.appendChild(valueSpan);
+    row.appendChild(label);
+
+    const slider = document.createElement('input');
+    slider.type = 'range';
+    slider.min = '0';
+    slider.max = '100';
+    slider.value = '0';
+    slider.addEventListener('input', () => {
+      valueSpan.textContent = slider.value + '%';
+    });
+    slider.addEventListener('change', async () => {
+      const strength = Number(slider.value) / 100;
+      try {
+        await sendVibrate(idx, strength);
+        log(`${device.name} 馬達${idx} -> ${slider.value}%`);
+      } catch (e) {
+        log(`錯誤 (馬達${idx}): ${e.message}`);
+      }
+    });
+    row.appendChild(slider);
+    wrapper.appendChild(row);
+  }
+
+  if (motorCount === 0) {
     const note = document.createElement('div');
     note.style.color = 'var(--muted)';
     note.style.fontSize = '0.8rem';
-    note.textContent = '此裝置沒有偵測到可控制的輸出功能';
+    note.textContent = '此裝置沒有偵測到可控制的震動馬達（詳情請看下方紀錄）';
     wrapper.appendChild(note);
   }
 
@@ -365,8 +419,15 @@ scanBtn.addEventListener('click', async () => {
 stopBtn.addEventListener('click', async () => {
   if (!client) return;
   try {
+    document.querySelectorAll('#deviceList .device').forEach(async (el) => {
+      if (typeof el._stop === 'function') {
+        try { await el._stop(); } catch (e) {}
+      }
+    });
     for (const [, device] of client.devices) {
-      await device.stop();
+      try {
+        if (typeof device.stop === 'function') await device.stop();
+      } catch (e) {}
     }
     log('已送出緊急停止指令');
     document.querySelectorAll('input[type="range"]').forEach(s => {
