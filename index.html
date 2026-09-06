@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Intiface 測試頁</title>
+<style>
+  :root {
+    --bg: #111318;
+    --panel: #1b1e26;
+    --accent: #6ee7d0;
+    --accent-dim: #2f6b5e;
+    --text: #e8eaf0;
+    --muted: #8a8f9c;
+    --danger: #e0645a;
+    --ok: #6ee7d0;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+    padding: 16px;
+    padding-bottom: 40px;
+  }
+  h1 {
+    font-size: 1.1rem;
+    font-weight: 600;
+    margin: 0 0 4px;
+  }
+  .sub {
+    color: var(--muted);
+    font-size: 0.85rem;
+    margin-bottom: 20px;
+  }
+  .card {
+    background: var(--panel);
+    border-radius: 14px;
+    padding: 16px;
+    margin-bottom: 16px;
+  }
+  .status-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 12px;
+  }
+  .dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--danger);
+    flex-shrink: 0;
+    transition: background 0.2s;
+  }
+  .dot.connected { background: var(--ok); }
+  #statusText { font-size: 0.95rem; }
+  button {
+    -webkit-tap-highlight-color: transparent;
+    border: none;
+    border-radius: 10px;
+    padding: 14px 18px;
+    font-size: 1rem;
+    font-weight: 600;
+    cursor: pointer;
+    width: 100%;
+  }
+  .btn-primary {
+    background: var(--accent);
+    color: #05231d;
+  }
+  .btn-primary:disabled {
+    background: #2a2d35;
+    color: var(--muted);
+  }
+  .btn-secondary {
+    background: #2a2d35;
+    color: var(--text);
+    margin-top: 8px;
+  }
+  .btn-stop {
+    background: var(--danger);
+    color: #2a0906;
+    margin-top: 8px;
+  }
+  .device {
+    background: #14161c;
+    border-radius: 10px;
+    padding: 14px;
+    margin-bottom: 12px;
+  }
+  .device-name {
+    font-weight: 600;
+    margin-bottom: 10px;
+    font-size: 0.95rem;
+  }
+  .actuator {
+    margin-bottom: 12px;
+  }
+  .actuator:last-child { margin-bottom: 0; }
+  .actuator-label {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.8rem;
+    color: var(--muted);
+    margin-bottom: 6px;
+  }
+  input[type="range"] {
+    width: 100%;
+    height: 34px;
+    accent-color: var(--accent);
+  }
+  #deviceList:empty::after {
+    content: "尚未偵測到裝置";
+    color: var(--muted);
+    font-size: 0.85rem;
+  }
+  #log {
+    background: #0b0c10;
+    border-radius: 10px;
+    padding: 10px 12px;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 0.72rem;
+    color: #9aa0ac;
+    height: 160px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+  label.field {
+    display: block;
+    font-size: 0.8rem;
+    color: var(--muted);
+    margin-bottom: 6px;
+  }
+  input[type="text"] {
+    width: 100%;
+    background: #0b0c10;
+    border: 1px solid #2a2d35;
+    color: var(--text);
+    padding: 10px 12px;
+    border-radius: 8px;
+    font-size: 0.9rem;
+    margin-bottom: 10px;
+  }
+</style>
+</head>
+<body>
+
+<h1>Intiface 連線測試</h1>
+<div class="sub">透過 buttplug.js 連到手機上的 Intiface Central</div>
+
+<div class="card">
+  <div class="status-row">
+    <div class="dot" id="statusDot"></div>
+    <div id="statusText">尚未連線</div>
+  </div>
+
+  <label class="field" for="wsUrl">WebSocket 位址</label>
+  <input type="text" id="wsUrl" value="ws://127.0.0.1:12345">
+
+  <button class="btn-primary" id="connectBtn">連線</button>
+  <button class="btn-secondary" id="scanBtn" disabled>開始掃描裝置</button>
+  <button class="btn-stop" id="stopBtn" disabled>緊急停止全部</button>
+</div>
+
+<div class="card">
+  <div class="device-name" style="margin-bottom:12px;">裝置</div>
+  <div id="deviceList"></div>
+</div>
+
+<div class="card">
+  <div class="device-name" style="margin-bottom:10px;">紀錄</div>
+  <div id="log"></div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/buttplug@5/dist/web/buttplug.js"></script>
+<script>
+const statusDot = document.getElementById('statusDot');
+const statusText = document.getElementById('statusText');
+const connectBtn = document.getElementById('connectBtn');
+const scanBtn = document.getElementById('scanBtn');
+const stopBtn = document.getElementById('stopBtn');
+const deviceList = document.getElementById('deviceList');
+const logEl = document.getElementById('log');
+const wsUrlInput = document.getElementById('wsUrl');
+
+let client = null;
+let connected = false;
+
+function log(msg) {
+  const time = new Date().toLocaleTimeString('zh-TW', { hour12: false });
+  logEl.textContent += `[${time}] ${msg}\n`;
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function setConnected(isConnected) {
+  connected = isConnected;
+  statusDot.classList.toggle('connected', isConnected);
+  statusText.textContent = isConnected ? '已連線到 Intiface Central' : '尚未連線';
+  connectBtn.textContent = isConnected ? '中斷連線' : '連線';
+  scanBtn.disabled = !isConnected;
+  stopBtn.disabled = !isConnected;
+  if (!isConnected) {
+    deviceList.innerHTML = '';
+  }
+}
+
+function renderDevice(device) {
+  const wrapper = document.createElement('div');
+  wrapper.className = 'device';
+
+  const title = document.createElement('div');
+  title.className = 'device-name';
+  title.textContent = device.name;
+  wrapper.appendChild(title);
+
+  // Vibrate actuators
+  const vibrateAttrs = device.vibrateAttributes || [];
+  vibrateAttrs.forEach((attr, idx) => {
+    const row = document.createElement('div');
+    row.className = 'actuator';
+
+    const label = document.createElement('div');
+    label.className = 'actuator-label';
+    const valueSpan = document.createElement('span');
+    valueSpan.textContent = '0%';
+    label.innerHTML = `<span>震動馬達 ${idx}</span>`;
+    label.appendChild(valueSpan);
+    row.appendChild(label);
+
+    const slider = document.createElement('input');
+    slider.type = 'range';
+    slider.min = '0';
+    slider.max = '100';
+    slider.value = '0';
+    slider.addEventListener('input', () => {
+      valueSpan.textContent = slider.value + '%';
+    });
+    slider.addEventListener('change', async () => {
+      const strength = Number(slider.value) / 100;
+      try {
+        await device.vibrate({ index: idx, scalar: strength });
+        log(`${device.name} 馬達${idx} -> ${slider.value}%`);
+      } catch (e) {
+        log(`錯誤: ${e.message}`);
+      }
+    });
+    row.appendChild(slider);
+    wrapper.appendChild(row);
+  });
+
+  // Oscillate actuators (some Satisfyer-style protocols expose this)
+  const oscillateAttrs = device.oscillateAttributes || [];
+  oscillateAttrs.forEach((attr, idx) => {
+    const row = document.createElement('div');
+    row.className = 'actuator';
+
+    const label = document.createElement('div');
+    label.className = 'actuator-label';
+    const valueSpan = document.createElement('span');
+    valueSpan.textContent = '0%';
+    label.innerHTML = `<span>震盪馬達 ${idx}</span>`;
+    label.appendChild(valueSpan);
+    row.appendChild(label);
+
+    const slider = document.createElement('input');
+    slider.type = 'range';
+    slider.min = '0';
+    slider.max = '100';
+    slider.value = '0';
+    slider.addEventListener('input', () => {
+      valueSpan.textContent = slider.value + '%';
+    });
+    slider.addEventListener('change', async () => {
+      const strength = Number(slider.value) / 100;
+      try {
+        await device.oscillate({ index: idx, scalar: strength });
+        log(`${device.name} 震盪${idx} -> ${slider.value}%`);
+      } catch (e) {
+        log(`錯誤: ${e.message}`);
+      }
+    });
+    row.appendChild(slider);
+    wrapper.appendChild(row);
+  });
+
+  if (vibrateAttrs.length === 0 && oscillateAttrs.length === 0) {
+    const note = document.createElement('div');
+    note.style.color = 'var(--muted)';
+    note.style.fontSize = '0.8rem';
+    note.textContent = '此裝置沒有偵測到可控制的震動馬達';
+    wrapper.appendChild(note);
+  }
+
+  deviceList.appendChild(wrapper);
+}
+
+function refreshDeviceList() {
+  deviceList.innerHTML = '';
+  if (!client) return;
+  client.devices.forEach(renderDevice);
+}
+
+connectBtn.addEventListener('click', async () => {
+  if (connected) {
+    try {
+      await client.disconnect();
+    } catch (e) {}
+    setConnected(false);
+    log('已中斷連線');
+    return;
+  }
+
+  const url = wsUrlInput.value.trim();
+  log(`嘗試連線至 ${url} ...`);
+  try {
+    const connector = new Buttplug.ButtplugBrowserWebsocketClientConnector(url);
+    client = new Buttplug.ButtplugClient('測試頁面');
+
+    client.addListener('deviceadded', (device) => {
+      log(`裝置已連接: ${device.name}`);
+      refreshDeviceList();
+    });
+    client.addListener('deviceremoved', (device) => {
+      log(`裝置已移除: ${device.name}`);
+      refreshDeviceList();
+    });
+    client.addListener('disconnect', () => {
+      log('與 Intiface Central 的連線已中斷');
+      setConnected(false);
+    });
+
+    await client.connect(connector);
+    setConnected(true);
+    log('連線成功');
+    refreshDeviceList();
+  } catch (e) {
+    log(`連線失敗: ${e.message}`);
+    setConnected(false);
+  }
+});
+
+scanBtn.addEventListener('click', async () => {
+  if (!client) return;
+  try {
+    log('開始掃描裝置 (請確認 Epic Duo 已開機並在配對模式)...');
+    await client.startScanning();
+    setTimeout(async () => {
+      try {
+        await client.stopScanning();
+        log('掃描結束');
+      } catch (e) {}
+    }, 8000);
+  } catch (e) {
+    log(`掃描失敗: ${e.message}`);
+  }
+});
+
+stopBtn.addEventListener('click', async () => {
+  if (!client) return;
+  try {
+    await client.stopAllDevices();
+    log('已送出緊急停止指令');
+    document.querySelectorAll('input[type="range"]').forEach(s => {
+      s.value = 0;
+      s.dispatchEvent(new Event('input'));
+    });
+  } catch (e) {
+    log(`停止失敗: ${e.message}`);
+  }
+});
+
+log('頁面已載入。請先在手機上開啟 Intiface Central 並按下播放鍵啟動伺服器。');
+</script>
+</body>
+</html>
